@@ -1,4 +1,3 @@
-import Groq from "groq-sdk";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -47,24 +46,50 @@ export async function POST(request: NextRequest) {
       imageUrl = `data:image/jpeg;base64,${image}`;
     }
 
-    const groq = new Groq({ apiKey });
-
-    const result = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: PROMPT },
-            { type: "image_url", image_url: { url: imageUrl } },
-          ],
+    // Call Groq REST API directly (no SDK needed)
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
         },
-      ],
-      max_tokens: 1024,
-      temperature: 0.3,
-    });
+        body: JSON.stringify({
+          model: "meta-llama/llama-4-scout-17b-16e-instruct",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: PROMPT },
+                { type: "image_url", image_url: { url: imageUrl } },
+              ],
+            },
+          ],
+          max_tokens: 1024,
+          temperature: 0.3,
+        }),
+      }
+    );
 
-    const responseText = result.choices[0]?.message?.content || "";
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error("Groq API error:", response.status, errBody);
+
+      if (response.status === 429) {
+        return NextResponse.json(
+          { error: "Too many requests. Please wait a moment and try again." },
+          { status: 429 }
+        );
+      }
+      return NextResponse.json(
+        { error: `AI service error (${response.status}). Please try again.` },
+        { status: 500 }
+      );
+    }
+
+    const data = await response.json();
+    const responseText = data.choices?.[0]?.message?.content || "";
 
     // Parse JSON from response, stripping any markdown fences
     const cleaned = responseText
@@ -106,17 +131,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(listing);
   } catch (error: unknown) {
     console.error("Analyze error:", error);
-
     const message =
       error instanceof Error ? error.message : "Failed to analyze image";
-
-    if (message.includes("rate") || message.includes("429")) {
-      return NextResponse.json(
-        { error: "Too many requests. Please wait a moment and try again." },
-        { status: 429 }
-      );
-    }
-
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
