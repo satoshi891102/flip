@@ -9,18 +9,40 @@ export default function HomePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const processFile = useCallback(
-    (file: File) => {
-      if (!file.type.startsWith("image/")) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = reader.result as string;
-        sessionStorage.setItem("flip-image", base64);
-        router.push("/generate");
+  const compressImage = useCallback((file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const MAX_DIM = 1200;
+        let { width, height } = img;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
       };
-      reader.readAsDataURL(file);
+      img.src = URL.createObjectURL(file);
+    });
+  }, []);
+
+  const processFile = useCallback(
+    async (file: File) => {
+      if (!file.type.startsWith("image/")) return;
+      const compressed = await compressImage(file);
+      sessionStorage.setItem("flip-image", compressed);
+      router.push("/generate");
     },
-    [router]
+    [router, compressImage]
   );
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
