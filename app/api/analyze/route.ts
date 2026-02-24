@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import Groq from "groq-sdk";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -25,7 +25,7 @@ Rules:
 
 export async function POST(request: NextRequest) {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
         { error: "API key not configured" },
@@ -41,57 +41,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Extract mime type and base64 data from data URL
-    // Handles: data:image/jpeg;base64,... data:image/png;base64,... data:image/webp;base64,...
-    const dataUrlMatch = image.match(/^data:([^;]+);base64,([\s\S]+)$/);
-    
-    let base64Data: string;
-    let mimeType: string;
-    
-    if (dataUrlMatch) {
-      mimeType = dataUrlMatch[1];
-      base64Data = dataUrlMatch[2];
-    } else {
-      // If no data URL prefix, assume raw base64 jpeg
-      mimeType = "image/jpeg";
-      base64Data = image;
+    // Ensure we have a proper data URL
+    let imageUrl = image;
+    if (!image.startsWith("data:")) {
+      imageUrl = `data:image/jpeg;base64,${image}`;
     }
 
-    // Clean any whitespace/newlines from base64
-    base64Data = base64Data.replace(/\s/g, "");
+    const groq = new Groq({ apiKey });
 
-    // Validate base64 is not empty
-    if (!base64Data || base64Data.length < 100) {
-      return NextResponse.json(
-        { error: "Image data is too small or empty" },
-        { status: 400 }
-      );
-    }
-
-    // Resize if the base64 is very large (>4MB) - compress by truncating quality
-    // Gemini accepts up to 20MB but Vercel serverless has limits
-    const sizeInBytes = Math.ceil(base64Data.length * 0.75);
-    if (sizeInBytes > 10 * 1024 * 1024) {
-      return NextResponse.json(
-        { error: "Image is too large. Please use a smaller photo (under 10MB)." },
-        { status: 400 }
-      );
-    }
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-    const result = await model.generateContent([
-      PROMPT,
-      {
-        inlineData: {
-          data: base64Data,
-          mimeType,
+    const result = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: PROMPT },
+            { type: "image_url", image_url: { url: imageUrl } },
+          ],
         },
-      },
-    ]);
+      ],
+      max_tokens: 1024,
+      temperature: 0.3,
+    });
 
-    const responseText = result.response.text();
+    const responseText = result.choices[0]?.message?.content || "";
 
     // Parse JSON from response, stripping any markdown fences
     const cleaned = responseText
@@ -103,7 +76,10 @@ export async function POST(request: NextRequest) {
     try {
       listing = JSON.parse(cleaned);
     } catch {
-      console.error("Failed to parse Gemini response:", responseText.substring(0, 500));
+      console.error(
+        "Failed to parse response:",
+        responseText.substring(0, 500)
+      );
       return NextResponse.json(
         { error: "AI returned an unexpected format. Please try again." },
         { status: 500 }
@@ -130,20 +106,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(listing);
   } catch (error: unknown) {
     console.error("Analyze error:", error);
-    
-    // Better error messages for common failures
-    const message = error instanceof Error ? error.message : "Failed to analyze image";
-    
-    if (message.includes("API_KEY")) {
-      return NextResponse.json({ error: "API configuration error. Please contact support." }, { status: 500 });
+
+    const message =
+      error instanceof Error ? error.message : "Failed to analyze image";
+
+    if (message.includes("rate") || message.includes("429")) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait a moment and try again." },
+        { status: 429 }
+      );
     }
-    if (message.includes("quota") || message.includes("rate")) {
-      return NextResponse.json({ error: "Too many requests. Please wait a moment and try again." }, { status: 429 });
-    }
-    if (message.includes("SAFETY")) {
-      return NextResponse.json({ error: "Image was flagged by safety filters. Please try a different photo." }, { status: 400 });
-    }
-    
+
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
